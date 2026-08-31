@@ -141,6 +141,21 @@ class RammService
     {
         $columns = $this->getColumns($table, $getGeometry);
 
+        // RAMM's data/table with loadType "All" forces an ORDER BY on a column literally
+        // named "id" for OFFSET/FETCH paging; tables without that column (e.g. roadnames)
+        // 500 with "Invalid column name 'id'." Using loadType "Specified" with an explicit
+        // column list avoids that path. Columns MUST be plain name strings — column
+        // objects ({columnName:…}) trigger a server NullReferenceException.
+        //
+        // The schema also lists synthetic columns that are NOT real SQL columns and 500
+        // if selected: "id" (RAMM's entity id) and our own appended "wkt" marker. Drop
+        // both from the request. Geometry still comes back via the getGeometry flag as a
+        // trailing value per row.
+        $requestColumns = array_values(array_filter(
+            $getGeometry ? array_slice($columns, 0, -1) : $columns,
+            fn ($c) => strcasecmp((string) $c, 'id') !== 0 && strcasecmp((string) $c, 'wkt') !== 0
+        ));
+
         $body = [
             'filters'             => array_values($filters),
             'expandLookups'       => $expandLookups,
@@ -150,21 +165,28 @@ class RammService
             'excludeReplacedData' => true,
             'returnEntityId'      => false,
             'tableName'           => $table,
-            'loadType'            => 'All',
-            'columns'             => [],
+            'loadType'            => 'Specified',
+            'columns'             => $requestColumns,
         ];
 
         $res = $this->request('POST', 'data/table', $body);
+
+        // In "Specified" mode the returned values align to the requested columns, in order
+        // (plus a trailing geometry value when getGeometry). Map against exactly that list.
+        $mapColumns = $requestColumns;
+        if ($getGeometry) {
+            $mapColumns[] = 'wkt';
+        }
 
         $rows = [];
         if (is_array($res) && isset($res['rows'])) {
             foreach ($res['rows'] as $row) {
                 $values = $row['values'] ?? $row;
-                if (is_array($values) && $columns) {
+                if (is_array($values) && $mapColumns) {
                     // Map by the overlapping prefix so a value/column count mismatch
                     // (e.g. expandLookups appending display columns) can't blank the row.
-                    $n = min(count($columns), count($values));
-                    $rows[] = array_combine(array_slice($columns, 0, $n), array_slice($values, 0, $n));
+                    $n = min(count($mapColumns), count($values));
+                    $rows[] = array_combine(array_slice($mapColumns, 0, $n), array_slice($values, 0, $n));
                 } else {
                     $rows[] = $values;
                 }

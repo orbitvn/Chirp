@@ -237,6 +237,34 @@
     body.drive-mode .wp-foot { padding: 16px 24px; }
     body.drive-mode .works-panel button { font-size: 15px; padding: 11px 22px; }
 
+    /* Right-click context menu */
+    .ctx-menu {
+      position: fixed; z-index: 2000; min-width: 190px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; box-shadow: 0 14px 34px rgba(0,0,0,0.55);
+      padding: 5px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .ctx-menu .ctx-item {
+      appearance: none; background: transparent; border: 0; color: var(--text);
+      text-align: left; font-size: 13px; padding: 9px 12px; border-radius: 7px;
+      cursor: pointer; white-space: nowrap; font-family: inherit;
+    }
+    .ctx-menu .ctx-item:hover { background: var(--surface2); }
+    .ctx-menu .ctx-item.primary { color: var(--accent); font-weight: 700; }
+    .ctx-menu .ctx-sep { height: 1px; background: var(--border); margin: 3px 6px; }
+    #map.road-locked { cursor: pointer; }
+
+    /* Locked-road indicator in the road-history panel */
+    .wp-lock {
+      display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700;
+      color: #0d0f14; background: #ffd23f; padding: 2px 8px; border-radius: 999px;
+      vertical-align: middle; letter-spacing: 0.3px;
+    }
+    .works-panel .wp-unlock { color: #ffd23f; border-color: rgba(255,210,63,0.45); }
+    .works-panel .wp-unlock:hover { border-color: #ffd23f; }
+    .works-panel .wp-save { color: #0d0f14; background: #ffd23f; border-color: #ffd23f; font-weight: 800; }
+    .works-panel .wp-save:hover { filter: brightness(1.06); border-color: #ffd23f; }
+
     /* Placement banner */
     .place-banner {
       position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
@@ -411,7 +439,7 @@
 <div class="works-panel" id="worksPanel">
   <div class="wp-head">
     <span class="wp-pos" id="wpPos"></span>
-    <span class="wp-name" id="wpName">Road</span>
+    <span class="wp-name" id="wpName">Road</span><span class="wp-lock" id="wpLock" style="display:none;">🔒 Editing</span>
   </div>
   <div class="fwp-block" id="fwpBlock" style="display:none;">
     <div class="wp-section">Forward Works Programme</div>
@@ -440,6 +468,8 @@
     <div class="wp-empty" id="wpEmpty" style="display:none;">No surfacing history on this length.</div>
   </div>
   <div class="wp-foot">
+    <button type="button" id="wpSave" class="wp-save" style="display:none;">💾 Save &amp; unlock</button>
+    <button type="button" id="wpUnlock" class="wp-unlock" style="display:none;">Unlock</button>
     <button type="button" id="wpClear">Close</button>
     <a href="{{ route('fwp.changes.csv') }}" id="fwpExport" class="wp-export">Export changes</a>
   </div>
@@ -730,9 +760,10 @@
   const placeBanner = document.getElementById('placeBanner');
   const placeName = document.getElementById('placeName');
 
-  let pendingPoint = null, placing = false;
+  let pendingPoint = null, placing = false, ctxPointLatLng = null;
 
   function openPointModal() {
+    ctxPointLatLng = null;   // toolbar/global open: place by clicking (reset any pending context spot)
     if (measuring || measureLayer) clearMeasure();
     pName.value = ''; pDesc.value = ''; pValue.value = ''; pColor.value = '#6c63ff';
     errPName.classList.remove('show'); pName.classList.remove('is-invalid');
@@ -741,22 +772,11 @@
     document.getElementById('pointModal').classList.add('show');
     setTimeout(() => pName.focus(), 50);
   }
+  // Open the modal pre-targeted at a spot (from the right-click menu) — no extra click to place.
+  function openPointModalAt(latlng) { openPointModal(); ctxPointLatLng = latlng; }
   document.getElementById('btnAddPoint').addEventListener('click', openPointModal);
-  map.on('contextmenu', e => { e.originalEvent.preventDefault(); if (!placing && !drawing && !editing && !measuring) openPointModal(); });
 
-  document.getElementById('pointNext').addEventListener('click', () => {
-    const name = pName.value.trim();
-    if (!name) { errPName.classList.add('show'); pName.classList.add('is-invalid'); pName.focus(); return; }
-    pendingPoint = { name, description: pDesc.value.trim(), value: pValue.value === '' ? null : pValue.value, color: pColor.value };
-    closeModal('pointModal');
-    placing = true; placeName.textContent = name; placeBanner.classList.add('show'); mapEl.classList.add('placing');
-  });
-  function stopPlacing() { placing = false; pendingPoint = null; placeBanner.classList.remove('show'); mapEl.classList.remove('placing'); }
-  document.getElementById('cancelPlace').addEventListener('click', stopPlacing);
-
-  map.on('click', async e => {
-    if (!placing || !pendingPoint) return;
-    const payload = { ...pendingPoint, lat: e.latlng.lat, lng: e.latlng.lng };
+  async function savePoint(payload) {
     try {
       const res = await fetch(POINTS_POST, {
         method: 'POST',
@@ -768,7 +788,29 @@
       renderPoint(saved);
       showToast('Point "' + saved.name + '" added.');
     } catch (err) { showToast('Network error saving point.', true); }
-    finally { stopPlacing(); }
+  }
+
+  document.getElementById('pointNext').addEventListener('click', () => {
+    const name = pName.value.trim();
+    if (!name) { errPName.classList.add('show'); pName.classList.add('is-invalid'); pName.focus(); return; }
+    const meta = { name, description: pDesc.value.trim(), value: pValue.value === '' ? null : pValue.value, color: pColor.value };
+    closeModal('pointModal');
+    if (ctxPointLatLng) {
+      const at = ctxPointLatLng; ctxPointLatLng = null;
+      savePoint({ ...meta, lat: at.lat, lng: at.lng });   // dropped where you right-clicked
+    } else {
+      pendingPoint = meta;
+      placing = true; placeName.textContent = name; placeBanner.classList.add('show'); mapEl.classList.add('placing');
+    }
+  });
+  function stopPlacing() { placing = false; pendingPoint = null; placeBanner.classList.remove('show'); mapEl.classList.remove('placing'); }
+  document.getElementById('cancelPlace').addEventListener('click', stopPlacing);
+
+  map.on('click', async e => {
+    if (!placing || !pendingPoint) return;
+    const payload = { ...pendingPoint, lat: e.latlng.lat, lng: e.latlng.lng };
+    await savePoint(payload);
+    stopPlacing();
   });
 
   // ============================================================
@@ -892,11 +934,15 @@
     + '?where=1%3D1&outFields=road_id%2CRoadname&outSR=4326&f=geojson';
   const ROAD_STYLE = { color: '#9aa3bf', weight: 2, opacity: 0.55 };
   const ROAD_HOVER = { color: '#6c63ff', weight: 5, opacity: 1 };
+  const ROAD_LOCK  = { color: '#ffd23f', weight: 6, opacity: 1 };   // road locked for FWP editing
 
   let roadsLayer = null;
   let roadsIndex = [];            // [{ layer, feature, bbox:[minX,minY,maxX,maxY] }]
   let roadsVisible = true;
   let hoveredRoad = null;
+  let lockedRoad = null;          // roadsIndex entry locked for editing (null = follow cursor)
+  let lockedRoadId = null;
+  let pinnedTl = null;            // {start_m,end_m} section pinned for editing (null = hover previews)
 
   // Info box (top-right) showing the hovered road + chainage
   const roadInfo = L.control({ position: 'topright' });
@@ -1148,7 +1194,15 @@
   // Throttled mouse hover (desktop). Suspended while GPS follow drives the map.
   let lastHover = 0;
   map.on('mousemove', e => {
-    if (gpsFollow || !roadsVisible || roadsIndex.length === 0 || drawing || editing) return;
+    if (gpsFollow || drawing || editing) return;
+    // Locked: the road is fixed. Until a section is pinned, hover previews the segment;
+    // once pinned (left-click), the segment holds so the buttons act on it while you
+    // move to the panel. Never switches to another road.
+    if (worksMode && lockedRoadId != null) {
+      if (pinnedTl == null) updateWorksHover(lockedRoadId, e.latlng);
+      return;
+    }
+    if (!roadsVisible || roadsIndex.length === 0) return;
     const now = performance.now();
     if (now - lastHover < 45) return;
     lastHover = now;
@@ -1593,14 +1647,128 @@
     drawFwpSegments(fwpCtx.entry, roadId);
   });
 
+  // ---- Lock a road for FWP editing (right-click → Edit programme) ----
+  const wpLockEl = document.getElementById('wpLock');
+  function setLockBadge() {
+    wpLockEl.textContent = pinnedTl ? '🔒 Editing section' : '🔒 Click a section';
+  }
+  function lockRoadForEditing(entry, latlng) {
+    if (!worksMode || !entry) return;
+    clearRoadHover();                       // drop any transient hover highlight
+    if (lockedRoad && lockedRoad !== entry) lockedRoad.layer.setStyle(ROAD_STYLE);
+    lockedRoad = entry;
+    lockedRoadId = Math.round(Number(entry.feature.properties.road_id));
+    pinnedTl = null;
+    entry.layer.setStyle(ROAD_LOCK);
+    mapEl.classList.add('road-locked');
+    wpLockEl.style.display = ''; setLockBadge();
+    document.getElementById('wpUnlock').style.display = '';
+    document.getElementById('wpSave').style.display = '';
+    activeTl = null;                        // force a fresh segment render on the locked road
+    fetchWorks(lockedRoadId, latlng);       // ensure data; repopulates when it lands
+    updateWorksHover(lockedRoadId, latlng); // preview the section under the cursor
+    const rn = entry.feature.properties.Roadname || ('Road ' + lockedRoadId);
+    showToast('Locked ' + rn + ' — click the section you want, edit it, then Save.');
+  }
+  function unlockRoad() {
+    if (lockedRoad) lockedRoad.layer.setStyle(ROAD_STYLE);
+    lockedRoad = null; lockedRoadId = null; pinnedTl = null;
+    mapEl.classList.remove('road-locked');
+    wpLockEl.style.display = 'none';
+    document.getElementById('wpUnlock').style.display = 'none';
+    document.getElementById('wpSave').style.display = 'none';
+    activeTl = null;
+  }
+  document.getElementById('wpUnlock').addEventListener('click', unlockRoad);
+
+  // Save: edits already persist as overrides on each button press; this flushes the
+  // queue, confirms, and releases the lock.
+  document.getElementById('wpSave').addEventListener('click', () => {
+    flushFwpQueue();
+    showToast('Programme saved.');
+    unlockRoad();
+  });
+
+  // Left-click a locked road to PIN the section (treatment length) you want to edit.
+  // Once pinned it stays put while you move to the panel buttons.
+  function pinSectionAt(latlng) {
+    const entry = worksCache.get(lockedRoadId);
+    if (!entry || entry === 'loading' || entry === 'none' || !entry.line) return;
+    // Ignore clicks well away from the locked road (likely a stray click).
+    const snap = turf.nearestPointOnLine(entry.line, turf.point([latlng.lng, latlng.lat]), { units: 'kilometers' });
+    const resM = 40075016.686 * Math.cos(latlng.lat * Math.PI / 180) / (256 * Math.pow(2, map.getZoom()));
+    if ((snap.properties.dist * 1000) / resM > 60) return;
+    activeTl = null;                        // force render of the clicked section
+    updateWorksHover(lockedRoadId, latlng); // resolves + renders + sets fwpCtx for this section
+    if (activeTl) {
+      pinnedTl = { start_m: activeTl.start_m, end_m: activeTl.end_m };
+      setLockBadge();
+      showToast('Section pinned — edit it, then Save.');
+    }
+  }
+  map.on('click', e => {
+    if (!worksMode || lockedRoadId == null || placing) return;
+    pinSectionAt(e.latlng);
+  });
+
+  // ---- Right-click context menu (contextual: add point/line, or edit programme) ----
+  const ctxMenu = document.createElement('div');
+  ctxMenu.className = 'ctx-menu';
+  ctxMenu.style.display = 'none';
+  document.body.appendChild(ctxMenu);
+  function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxMenu.innerHTML = ''; }
+  function addCtxItem(label, fn, primary) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ctx-item' + (primary ? ' primary' : '');
+    b.textContent = label;
+    b.addEventListener('click', () => { hideCtxMenu(); fn(); });
+    ctxMenu.appendChild(b);
+  }
+  function addCtxSep() { const s = document.createElement('div'); s.className = 'ctx-sep'; ctxMenu.appendChild(s); }
+
+  map.on('contextmenu', e => {
+    e.originalEvent.preventDefault();
+    if (placing || drawing || editing || measuring) return;   // busy with another gesture
+    hideCtxMenu();
+    const latlng = e.latlng;
+
+    // Road under the cursor — only offered as an edit target in works mode.
+    const match = (worksMode && roadsVisible && roadsIndex.length) ? locateRoadAt(latlng.lat, latlng.lng) : null;
+    if (match) {
+      const rn = match.best.feature.properties.Roadname || ('Road ' + match.best.feature.properties.road_id);
+      addCtxItem('🔧 Edit programme — ' + rn, () => lockRoadForEditing(match.best, latlng), true);
+    }
+    if (lockedRoadId != null) addCtxItem('🔓 Unlock road', unlockRoad);
+    if (match || lockedRoadId != null) addCtxSep();
+
+    addCtxItem('📍 Add point here', () => openPointModalAt(latlng));
+    addCtxItem('〰️ Add line', () => openLineModal());
+
+    ctxMenu.style.display = 'block';
+    const r = ctxMenu.getBoundingClientRect();
+    const x = Math.min(e.originalEvent.clientX, window.innerWidth  - r.width  - 8);
+    const y = Math.min(e.originalEvent.clientY, window.innerHeight - r.height - 8);
+    ctxMenu.style.left = Math.max(8, x) + 'px';
+    ctxMenu.style.top  = Math.max(8, y) + 'px';
+  });
+  document.addEventListener('click', (ev) => { if (!ctxMenu.contains(ev.target)) hideCtxMenu(); });
+  map.on('movestart zoomstart', hideCtxMenu);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (ctxMenu.style.display !== 'none') { hideCtxMenu(); return; }
+    if (lockedRoadId != null) unlockRoad();
+  });
+
   document.getElementById('btnWorks').addEventListener('click', () => {
     worksMode = !worksMode;
     document.getElementById('btnWorks').classList.toggle('active', worksMode);
     if (worksMode && !roadsVisible) document.getElementById('btnRoads').click(); // need roads to hover
     if (worksMode) {
-      showToast('Hover a road to see its surfacing history + forward works.');
+      showToast('Hover a road for its history, or right-click → Edit programme to lock it.');
       toggleFwpLegend(true);
     } else {
+      unlockRoad();
       worksLayer.clearLayers();
       fwpLayer.clearLayers();
       document.getElementById('fwpBlock').style.display = 'none';
@@ -1611,6 +1779,7 @@
   });
 
   document.getElementById('wpClear').addEventListener('click', () => {
+    unlockRoad();
     worksLayer.clearLayers();
     fwpLayer.clearLayers();
     document.getElementById('fwpBlock').style.display = 'none';
