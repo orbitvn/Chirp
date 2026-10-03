@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCouncil;
 use Illuminate\Database\Eloquent\Model;
 
 class FwpOverride extends Model
 {
+    use BelongsToCouncil;
+
     protected $table = 'fwp_overrides';
 
     protected $fillable = [

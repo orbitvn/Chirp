@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\Council;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
 
@@ -65,7 +66,10 @@ class AuthController extends Controller
             return redirect()->route('login');
         }
 
-        return view('maps', compact('user'));
+        $council  = Council::current();
+        $councils = Council::all();
+
+        return view('maps', compact('user', 'council', 'councils'));
     }
 
     public function logout(Request $request)

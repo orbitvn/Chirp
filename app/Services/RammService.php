@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\Council;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -19,21 +20,25 @@ use RuntimeException;
 class RammService
 {
     private string $base;
-    private ?string $database;
     private ?string $username;
     private ?string $password;
 
     public function __construct()
     {
         $this->base     = rtrim((string) config('services.ramm.base'), '/');
-        $this->database = config('services.ramm.database');
         $this->username = config('services.ramm.username');
         $this->password = config('services.ramm.password');
     }
 
+    /** RAMM database of the current council (see config/councils.php). */
+    private function database(): ?string
+    {
+        return Council::config()['ramm_database'] ?? null;
+    }
+
     public function isConfigured(): bool
     {
-        return filled($this->database) && filled($this->username) && filled($this->password);
+        return filled($this->database()) && filled($this->username) && filled($this->password);
     }
 
     /**
@@ -45,7 +50,7 @@ class RammService
             throw new RuntimeException('RAMM credentials are not set — fill RAMM_DATABASE / RAMM_USERNAME / RAMM_PASSWORD in .env.');
         }
 
-        $cacheKey = 'ramm_token_' . md5($this->base . '|' . $this->database . '|' . $this->username);
+        $cacheKey = 'ramm_token_' . md5($this->base . '|' . $this->database() . '|' . $this->username);
 
         if ($forceRefresh) {
             Cache::forget($cacheKey);
@@ -54,7 +59,7 @@ class RammService
         return Cache::remember($cacheKey, now()->addMinutes(45), function () {
             $res = Http::send('POST', $this->base . '/authenticate/login', [
                 'query' => [
-                    'database' => $this->database,
+                    'database' => $this->database(),
                     'userName' => $this->username,
                     'password' => $this->password,
                 ],
@@ -112,7 +117,7 @@ class RammService
     {
         // Schema is stable, so cache the column list (a day) to avoid a RAMM
         // round-trip on every data query — roughly halves calls during a bulk import.
-        $cols = Cache::remember('ramm_cols_' . $table, now()->addDay(), function () use ($table) {
+        $cols = Cache::remember('ramm_cols_' . md5((string) $this->database()) . '_' . $table, now()->addDay(), function () use ($table) {
             $schema = $this->request('GET', 'schema/' . $table, [], ['loadType' => 3]);
 
             $out = [];

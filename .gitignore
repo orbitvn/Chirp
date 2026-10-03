@@ -18,7 +18,7 @@
 /public/hot
 /public/storage
 # Generated RAMM offline bundle (rebuild with `php artisan ramm:export`)
-/public/data/ramm-offline.json
+/public/data/ramm-offline*.json
 /public/data/ramm-offline.version.json
 /storage/*.key
 /storage/pail

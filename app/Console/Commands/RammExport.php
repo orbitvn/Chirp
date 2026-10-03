@@ -7,25 +7,55 @@ use App\Models\RammFwpTreatment;
 use App\Models\RammRoad;
 use App\Models\RammSurfacing;
 use App\Models\RammTreatmentLength;
+use App\Support\Council;
 use Illuminate\Console\Command;
 
 class RammExport extends Command
 {
     protected $signature = 'ramm:export
-        {--path= : Output file (default public/data/ramm-offline.json)}';
+        {--council= : Just this council (default: every council with imported roads)}
+        {--path= : Output file (default public/data/ramm-offline-<council>.json)}';
 
     protected $description = 'Export curated RAMM data to a static bundle for offline / on-device use';
 
     public function handle(): int
     {
-        $path = $this->option('path') ?: public_path('data/ramm-offline.json');
-        @mkdir(dirname($path), 0755, true);
-
-        $roadCount = RammRoad::count();
-        if ($roadCount === 0) {
-            $this->error('No roads stored. Run `php artisan ramm:import` first.');
+        $only = $this->option('council');
+        if ($only !== null && ! Council::exists($only)) {
+            $this->error("Unknown council '{$only}'.");
             return self::FAILURE;
         }
+
+        $exported = 0;
+        foreach ($only !== null ? [$only] : array_keys(Council::all()) as $slug) {
+            Council::use($slug);
+            $roadCount = RammRoad::count();
+            if ($roadCount === 0) {
+                if ($only !== null) {
+                    $this->error("No roads stored for {$slug}. Run `php artisan ramm:import --council={$slug}` first.");
+                    return self::FAILURE;
+                }
+                $this->line("Skipping {$slug}: no roads imported.");
+                continue;
+            }
+            $this->info('Council: ' . Council::config()['name']);
+            $path = ($only !== null ? $this->option('path') : null) ?: public_path("data/ramm-offline-{$slug}.json");
+            if ($this->exportCouncil($path, $roadCount) !== self::SUCCESS) {
+                return self::FAILURE;
+            }
+            $exported++;
+        }
+
+        if ($exported === 0) {
+            $this->error('No roads stored. Run `php artisan ramm:import --council=<slug>` first.');
+            return self::FAILURE;
+        }
+        return self::SUCCESS;
+    }
+
+    private function exportCouncil(string $path, int $roadCount): int
+    {
+        @mkdir(dirname($path), 0755, true);
 
         // A version stamp the client uses to decide whether to re-download.
         // Changes whenever the imported data changes (last import + row counts).
@@ -56,6 +86,7 @@ class RammExport extends Command
         }
 
         fwrite($fh, '{"version":' . json_encode($version)
+            . ',"council":' . json_encode(Council::current())
             . ',"generated_at":' . json_encode(now()->toIso8601String())
             . ',"count":' . $roadCount
             . ',"treatments":' . json_encode($treatments, JSON_UNESCAPED_SLASHES)
@@ -124,7 +155,7 @@ class RammExport extends Command
         // Tiny companion file: the client fetches this first (cheap) and only
         // re-downloads the full bundle when the version changes.
         file_put_contents(
-            dirname($path) . '/ramm-offline.version.json',
+            preg_replace('/\.json$/', '.version.json', $path),
             json_encode(['version' => $version, 'count' => $roadCount, 'generated_at' => now()->toIso8601String()])
         );
 

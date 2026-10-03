@@ -84,6 +84,11 @@
       display: inline-flex; align-items: center; gap: 7px;
     }
     .btn-outline:hover { color: var(--text); border-color: var(--muted); }
+    .nav-right { display: flex; align-items: center; gap: 10px; }
+    .council-pick select {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-size: 13.5px; font-weight: 600; padding: 8px 12px; cursor: pointer;
+    }
 
     /* Header */
     .page-head { margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
@@ -214,6 +219,10 @@
     body.drive-mode .works-panel .fwp-t,
     body.drive-mode .works-panel .fwp-u { font-size: 20px; padding: 18px 0; border-radius: 12px; }
 
+    .fwp-seg-label { background: none; border: none; }
+    .fwp-seg-label span { display: inline-block; transform: translate(-50%, -150%); white-space: nowrap; pointer-events: none;
+      background: rgba(13,15,20,0.88); color: #fff; border: 2px solid; border-radius: 6px; padding: 1px 6px;
+      font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .fwp-legend { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
     .fwp-legend .fl-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 5px; }
     .fwp-legend .fl-scale { display: flex; }
@@ -388,7 +397,17 @@
       <div class="logo-icon">⚡</div>
       <span class="logo-name">{{ config('app.name', 'Chirp') }}</span>
     </div>
-    <a href="{{ route('dashboard') }}" class="btn-outline">← Back to dashboard</a>
+    <div class="nav-right">
+      <form method="POST" action="{{ route('council.switch') }}" class="council-pick">
+        @csrf
+        <select name="council" aria-label="Council" onchange="this.form.submit()">
+          @foreach ($councils as $slug => $c)
+            <option value="{{ $slug }}" @selected($slug === $council)>{{ $c['name'] }}</option>
+          @endforeach
+        </select>
+      </form>
+      <a href="{{ route('dashboard') }}" class="btn-outline">← Back to dashboard</a>
+    </div>
   </nav>
 
   {{-- Header + toolbar --}}
@@ -576,8 +595,10 @@
 
   const mapEl = document.getElementById('map');
 
-  // --- Map setup: Hawke's Bay, NZ (Napier–Hastings) ---
-  const map = L.map('map').setView([-39.5661, 176.8750], 11);
+  // --- Map setup: centred on the selected council ---
+  const COUNCIL = @json($council);
+  const COUNCIL_CFG = @json($councils[$council]);
+  const map = L.map('map').setView(COUNCIL_CFG.center, COUNCIL_CFG.zoom);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -929,9 +950,9 @@
   map.createPane('roadsPane');
   map.getPane('roadsPane').style.zIndex = 320;   // above tiles (200), below points/lines (400)
 
-  // HDC OpenData_RoadCentrelines, served live as WGS84 GeoJSON (road_id = RAMM road id).
-  const ROADS_URL = 'https://services1.arcgis.com/8L3DQUzjrkgEmDpQ/arcgis/rest/services/OpenData_RoadCentrelines/FeatureServer/1/query'
-    + '?where=1%3D1&outFields=road_id%2CRoadname&outSR=4326&f=geojson';
+  // Council road centrelines served live as WGS84 GeoJSON (road_id = RAMM road id),
+  // e.g. HDC OpenData_RoadCentrelines. Null = build the network from the RAMM bundle.
+  const ROADS_URL = COUNCIL_CFG.roads_url;
   const ROAD_STYLE = { color: '#9aa3bf', weight: 2, opacity: 0.55 };
   const ROAD_HOVER = { color: '#6c63ff', weight: 5, opacity: 1 };
   const ROAD_LOCK  = { color: '#ffd23f', weight: 6, opacity: 1 };   // road locked for FWP editing
@@ -956,9 +977,11 @@
   //  the fallback for road detection and works/line lookups.
   // ============================================================
   const RammOffline = (() => {
-    const DB = 'chirp-ramm', DB_VER = 1, STORE = 'roads', META = 'meta';
-    const BUNDLE_URL  = @json(asset('data/ramm-offline.json'));
-    const VERSION_URL = @json(asset('data/ramm-offline.version.json'));
+    // One IndexedDB + bundle per council (road_id is only unique within a council).
+    const DB = 'chirp-ramm-' + COUNCIL, DB_VER = 1, STORE = 'roads', META = 'meta';
+    const BUNDLE_URL  = @json(asset('data/ramm-offline-' . $council . '.json'));
+    const VERSION_URL = @json(asset('data/ramm-offline-' . $council . '.version.json'));
+    try { indexedDB.deleteDatabase('chirp-ramm'); } catch (e) { /* pre-council store */ }
     let db = null, version = null, treatments = [];
 
     function open() {
@@ -1080,6 +1103,7 @@
   }
 
   async function loadRoads() {
+    if (!ROADS_URL) { await loadRoadsFromOffline(true); return; }
     try {
       const res = await fetch(ROADS_URL, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1091,8 +1115,7 @@
         onEachFeature: (feature, layer) => roadsIndex.push({ layer, feature, bbox: turf.bbox(feature) }),
       }).addTo(map);
       buildRoadGrid();
-      map.attributionControl.addAttribution(
-        'Roads &copy; <a href="https://data-hdcgis.opendata.arcgis.com/" target="_blank" rel="noopener">Hastings DC</a> / NZTA');
+      map.attributionControl.addAttribution(COUNCIL_CFG.roads_attribution);
     } catch (e) {
       // Offline / ArcGIS unreachable: fall back to the cached RAMM road network.
       await loadRoadsFromOffline();
@@ -1100,7 +1123,7 @@
   }
 
   // Build the detection network from the offline bundle (RAMM roads with geometry).
-  async function loadRoadsFromOffline() {
+  async function loadRoadsFromOffline(primary = false) {
     await RammOffline.ready;
     const roads = await RammOffline.allRoads();
     const feats = roads
@@ -1115,7 +1138,8 @@
       onEachFeature: (feature, layer) => roadsIndex.push({ layer, feature, bbox: turf.bbox(feature) }),
     }).addTo(map);
     buildRoadGrid();
-    showToast('Offline: using cached road network (' + feats.length + ' roads).');
+    if (primary) map.attributionControl.addAttribution(COUNCIL_CFG.roads_attribution);
+    else showToast('Offline: using cached road network (' + feats.length + ' roads).');
   }
   loadRoads();
 
@@ -1404,7 +1428,7 @@
   //  and edit them in the field via +/- buttons (saved as local
   //  overrides, never written straight back to RAMM). Offline-safe.
   // ============================================================
-  const FWP_STORE_KEY = 'chirp_fwp_overrides';   // device-local overrides + queue
+  const FWP_STORE_KEY = 'chirp_fwp_overrides_' + COUNCIL;   // device-local overrides + queue, per council
   const fwpLayer = L.layerGroup().addTo(map);
   let fwpTreatments = [];           // [{code,category,...}] cycle vocabulary
   let fwpCtx = null;                // segment the buttons currently act on
@@ -1413,7 +1437,9 @@
 
   // Load device-local overrides + queue from localStorage.
   try {
-    const saved = JSON.parse(localStorage.getItem(FWP_STORE_KEY) || '{}');
+    // Edits made before councils existed were all Hastings.
+    const legacy = COUNCIL === 'hastings' ? localStorage.getItem('chirp_fwp_overrides') : null;
+    const saved = JSON.parse(localStorage.getItem(FWP_STORE_KEY) || legacy || '{}');
     (saved.overrides || []).forEach(o => fwpLocal.set(o._key, o));
     fwpQueue = saved.queue || [];
   } catch (e) { /* ignore corrupt store */ }
@@ -1545,7 +1571,20 @@
     }
   }
 
-  // Draw the road's FWP segments coloured by programmed year.
+  // Year of the current top surface at an RP (latest surfacing covering it), or null.
+  function lastTreatmentYear(entry, rp) {
+    let best = null;
+    (entry.surfaces || []).forEach(s => {
+      if (rp < s.start_m || rp > s.end_m || !s.surface_date) return;
+      const d = new Date(s.surface_date);
+      const y = isNaN(d) ? parseInt(String(s.surface_date).slice(0, 4), 10) : d.getFullYear();
+      if (!isNaN(y) && (best == null || y > best)) best = y;
+    });
+    return best;
+  }
+
+  // Draw the road's FWP segments coloured by programmed year, each labelled
+  // "last treatment year / FWP year / years between".
   function drawFwpSegments(entry, roadId) {
     fwpLayer.clearLayers();
     (entry.fwp || []).forEach(f => {
@@ -1555,8 +1594,23 @@
         const coords = seg.geometry.coordinates.map(c => [c[1], c[0]]);
         const eff = fwpEffective(roadId ?? 0, entry, { ...f, _scratch: false });
         if (coords.length >= 2) {
-          L.polyline(coords, { color: fwpYearColor(eff.yearStart), weight: 5, opacity: 0.85,
+          const color = fwpYearColor(eff.yearStart);
+          L.polyline(coords, { color, weight: 5, opacity: 0.85,
                                interactive: false, lineCap: 'round' }).addTo(fwpLayer);
+
+          const tmtYs = lastTreatmentYear(entry, (f.start_m + f.end_m) / 2);
+          const gap = (tmtYs != null && eff.yearStart != null) ? eff.yearStart - tmtYs : null;
+          const segKm = turf.length(seg, { units: 'kilometers' });
+          const mid = turf.along(seg, segKm / 2, { units: 'kilometers' }).geometry.coordinates;
+          L.marker([mid[1], mid[0]], {
+            interactive: false, keyboard: false,
+            icon: L.divIcon({
+              className: 'fwp-seg-label',
+              html: '<span style="border-color:' + color + '">' +
+                    (tmtYs ?? '—') + ' / ' + (eff.yearStart ?? '—') + ' / ' + (gap ?? '—') + '</span>',
+              iconSize: null,
+            }),
+          }).addTo(fwpLayer);
         }
       } catch (e) { /* slice outside line */ }
     });
@@ -1579,7 +1633,7 @@
       const res = await fetch('/fwp/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': CSRF },
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ council: COUNCIL, items }),
       });
       if (res.ok) { fwpQueue = []; fwpPersist(); }
     } catch (e) { /* stay queued */ }
@@ -1640,7 +1694,7 @@
     fetch('/fwp/override/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': CSRF },
-      body: JSON.stringify({ road_id: roadId, treat_length_id: seg.treat_length_id ?? null,
+      body: JSON.stringify({ council: COUNCIL, road_id: roadId, treat_length_id: seg.treat_length_id ?? null,
                              start_m: seg.start_m, end_m: seg.end_m }),
     }).catch(() => {});
     renderFwpSegment(roadId, fwpCtx.entry, seg);

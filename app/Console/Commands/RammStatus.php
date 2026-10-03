@@ -6,6 +6,7 @@ use App\Models\RammRoad;
 use App\Models\RammSurfacing;
 use App\Models\RammTreatmentLength;
 use App\Services\RammSync;
+use App\Support\Council;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -13,12 +14,21 @@ class RammStatus extends Command
 {
     protected $signature = 'ramm:status
         {--remote : Also fetch the total road count from RAMM to show %% complete}
-        {--decode : List distinct stored surf_material / surf_function values (checks expandLookups decoded to names, not codes)}';
+        {--decode : List distinct stored surf_material / surf_function values (checks expandLookups decoded to names, not codes)}
+        {--council= : Council slug from config/councils.php (default: COUNCIL_DEFAULT)}';
 
     protected $description = 'Show how much curated RAMM data is stored locally (import progress)';
 
     public function handle(RammSync $sync): int
     {
+        try {
+            Council::use($this->option('council') ?: Council::default());
+        } catch (\InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+            return self::FAILURE;
+        }
+        $this->line('Council: <info>' . Council::config()['name'] . '</info>');
+
         $roads       = RammRoad::count();
         $withGeom    = RammRoad::whereNotNull('line')->where('line', '!=', '[]')->count();
         $noGeom      = $roads - $withGeom;

@@ -4,17 +4,27 @@ namespace App\Console\Commands;
 
 use App\Models\RammRoad;
 use App\Services\RammSync;
+use App\Support\Council;
 use Illuminate\Console\Command;
 use Throwable;
 
 class RammFwpImport extends Command
 {
-    protected $signature = 'ramm:fwp {road? : Just this road_id}';
+    protected $signature = 'ramm:fwp {road? : Just this road_id}
+        {--council= : Council slug from config/councils.php (default: COUNCIL_DEFAULT)}';
 
     protected $description = 'Backfill the Forward Works Programme (ud_fwp_works) for already-imported roads';
 
     public function handle(RammSync $sync): int
     {
+        try {
+            Council::use($this->option('council') ?: Council::default());
+        } catch (\InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+            return self::FAILURE;
+        }
+        $this->line('Council: <info>' . Council::config()['name'] . '</info>');
+
         // Refresh the treatment vocabulary once up front.
         $this->info('Syncing FWP treatment vocabulary…');
         $this->line($sync->importTreatments() . ' treatments.');

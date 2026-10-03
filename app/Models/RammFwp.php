@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCouncil;
 use Illuminate\Database\Eloquent\Model;
 
 class RammFwp extends Model
 {
+    use BelongsToCouncil;
+
     protected $table = 'ramm_fwp';
 
     protected $fillable = [

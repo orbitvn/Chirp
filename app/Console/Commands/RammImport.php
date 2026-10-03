@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\RammRoad;
 use App\Services\RammSync;
+use App\Support\Council;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -11,12 +12,21 @@ class RammImport extends Command
 {
     protected $signature = 'ramm:import
         {road? : Import just this road_id}
-        {--fresh : Re-import roads that are already stored}';
+        {--fresh : Re-import roads that are already stored}
+        {--council= : Council slug from config/councils.php (default: COUNCIL_DEFAULT)}';
 
     protected $description = 'Import curated RAMM data (geometry, surfacing, treatment lengths) into the local database';
 
     public function handle(RammSync $sync): int
     {
+        try {
+            Council::use($this->option('council') ?: Council::default());
+        } catch (\InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+            return self::FAILURE;
+        }
+        $this->line('Council: <info>' . Council::config()['name'] . '</info>');
+
         // Single road mode.
         if ($road = $this->argument('road')) {
             $this->info("Importing road {$road}…");

@@ -7,6 +7,7 @@ use App\Models\RammFwpTreatment;
 use App\Models\RammRoad;
 use App\Models\RammSurfacing;
 use App\Models\RammTreatmentLength;
+use App\Support\Council;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -67,7 +68,9 @@ class RammSync
         $tls  = $this->ramm->roadTreatmentLengths((string) $roadId);
         $fwp  = $this->fetchFwp($roadId);
 
-        DB::transaction(function () use ($roadId, $roadName, $geo, $surf, $tls, $fwp) {
+        $council = Council::current();   // bulk insert() skips the model hook
+
+        DB::transaction(function () use ($council, $roadId, $roadName, $geo, $surf, $tls, $fwp) {
             RammRoad::updateOrCreate(
                 ['road_id' => $roadId],
                 [
@@ -86,6 +89,7 @@ class RammSync
                     continue;
                 }
                 $surfRows[] = [
+                    'council'       => $council,
                     'road_id'       => $roadId,
                     'start_m'       => self::num($s['start_m'] ?? null),
                     'end_m'         => self::num($s['end_m'] ?? null),
@@ -109,6 +113,7 @@ class RammSync
             $tlRows = [];
             foreach ($tls as $t) {
                 $tlRows[] = [
+                    'council'    => $council,
                     'road_id'    => $roadId,
                     'tl_id'      => is_numeric($t['tl_id'] ?? null) ? (int) $t['tl_id'] : null,
                     'tl_name'    => self::str($t['name'] ?? null),
@@ -155,13 +160,78 @@ class RammSync
         return count($fwp);
     }
 
+    /** Which RAMM table holds this council's FWP (see config/councils.php). */
+    private function fwpSource(): string
+    {
+        return Council::config()['fwp_source'] ?? 'ud_fwp_works';
+    }
+
     /**
-     * Pull the Forward Works Programme (ud_fwp_works) for one road and normalise
-     * it to ramm_fwp rows. Degrades to [] if the table isn't available.
+     * Pull the Forward Works Programme for one road and normalise it to
+     * ramm_fwp rows. Degrades to [] if the table isn't available.
      *
      * @return array<int, array<string, mixed>>
      */
     private function fetchFwp(string|int $roadId): array
+    {
+        return $this->fwpSource() === 'fw_forward_work_view'
+            ? $this->fetchFwpView($roadId)
+            : $this->fetchFwpUd($roadId);
+    }
+
+    /**
+     * RAMM's standard Forward Work Treatment View (fw_forward_work_view), e.g. Wairoa.
+     * Raw values (no expandLookups) so road_id stays numeric and fw_treatment is
+     * the code (RS24, AWPT) matching fw_treatment.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchFwpView(string|int $roadId): array
+    {
+        $catMap = $this->treatmentCategories();
+
+        try {
+            $rows = $this->ramm->queryTable('fw_forward_work_view', [RammService::eq('road_id', $roadId)], 500)['rows'];
+        } catch (Throwable $e) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            if (! is_array($r)) {
+                continue;
+            }
+            $code   = self::str($r['fw_treatment'] ?? null);
+            $year   = self::str($r['fw_year'] ?? null);
+            $reason = implode(' — ', array_filter([self::str($r['reasons'] ?? null), self::str($r['reason_note'] ?? null)]));
+            $out[] = [
+                'council'         => Council::current(),
+                'road_id'         => (int) $roadId,
+                'treat_length_id' => is_numeric($r['treat_length_id'] ?? null) ? (int) $r['treat_length_id'] : null,
+                'works_id'        => null,
+                'start_m'         => self::num($r['tl_start_m'] ?? null),
+                'end_m'           => self::num($r['tl_end_m'] ?? null),
+                'treatment_id'    => $code,
+                'treatment'       => $code,
+                'category'        => $code !== null ? ($catMap[$code] ?? null) : null,
+                'fw_year'         => $year,
+                'year_start'      => self::fyStart($year),
+                'reason'          => $reason !== '' ? $reason : null,
+                'rank_score'      => null,
+                'cost'            => null,
+                'coverage_pct'    => self::num($r['coverage'] ?? null),
+                'locked'          => false,
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Hastings-style user-defined FWP table (ud_fwp_works).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchFwpUd(string|int $roadId): array
     {
         $catMap = $this->treatmentCategories();
 
@@ -181,6 +251,7 @@ class RammSync
             $code = self::str($r['treatment_id'] ?? null);
             $year = self::str($r['trt_year'] ?? null);
             $out[] = [
+                'council'         => Council::current(),
                 'road_id'         => (int) $roadId,
                 'treat_length_id' => is_numeric($r['treat_length_id'] ?? null) ? (int) $r['treat_length_id'] : null,
                 'works_id'        => is_numeric($r['system_id'] ?? null) ? (int) $r['system_id'] : null,
@@ -215,11 +286,16 @@ class RammSync
     }
 
     /**
-     * Sync the FWP treatment vocabulary (ud_fwp_treatments) into ramm_fwp_treatments.
-     * The `description` column is the treatment code (AWPT, CS, TAC, ...).
+     * Sync the FWP treatment vocabulary into ramm_fwp_treatments: ud_fwp_treatments
+     * (whose `description` is the code: AWPT, CS, TAC, ...) or, for councils on the
+     * standard view, fw_treatment.
      */
     public function importTreatments(): int
     {
+        if ($this->fwpSource() === 'fw_forward_work_view') {
+            return $this->importFwTreatments();
+        }
+
         try {
             $rows = $this->ramm->queryTable('ud_fwp_treatments', [], 500)['rows'];
         } catch (Throwable $e) {
@@ -237,6 +313,33 @@ class RammSync
                 'asset_type' => self::str($r['asset_type'] ?? null),
                 'ra1_rate'   => self::num($r['ra1_rate'] ?? null),
                 'ra2_rate'   => self::num($r['ra2_rate'] ?? null),
+                'active'     => (bool) ($r['active'] ?? true),
+                'seq'        => is_numeric($r['display_sequence'] ?? null) ? (int) $r['display_sequence'] : null,
+            ]);
+            $n++;
+        }
+        return $n;
+    }
+
+    /** fw_treatment lookup (code, description, group) into ramm_fwp_treatments. */
+    private function importFwTreatments(): int
+    {
+        try {
+            // expandLookups so treatment_group reads "Surfacing (Reseal)" not "RS".
+            $rows = $this->ramm->queryTable('fw_treatment', [], 500, false, true)['rows'];
+        } catch (Throwable $e) {
+            return 0;
+        }
+
+        $n = 0;
+        foreach ($rows as $r) {
+            $code = self::str($r['fw_treatment'] ?? null);
+            if ($code === null) {
+                continue;
+            }
+            RammFwpTreatment::updateOrCreate(['code' => $code], [
+                'category'   => self::str($r['treatment_group'] ?? null),
+                'asset_type' => self::str($r['funding_group'] ?? null),
                 'active'     => (bool) ($r['active'] ?? true),
                 'seq'        => is_numeric($r['display_sequence'] ?? null) ? (int) $r['display_sequence'] : null,
             ]);

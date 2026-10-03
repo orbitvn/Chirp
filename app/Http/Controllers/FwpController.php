@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\FwpOverride;
 use App\Models\RammFwp;
 use App\Models\RammFwpTreatment;
+use App\Support\Council;
+use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Session;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -26,6 +28,16 @@ class FwpController extends Controller
         return is_string($u) ? $u : null;
     }
 
+    /**
+     * Run $fn in the council the client says the edit belongs to (edits can be
+     * queued offline and flushed after the user has switched council).
+     */
+    private function inCouncil(Request $request, Closure $fn): mixed
+    {
+        $slug = $request->input('council');
+        return Council::exists($slug) ? Council::using($slug, $fn) : $fn();
+    }
+
     /** The FWP treatment vocabulary (cycle-button options + rates). */
     public function treatments()
     {
@@ -44,7 +56,7 @@ class FwpController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
         try {
-            $ov = $this->upsert($request->all());
+            $ov = $this->inCouncil($request, fn () => $this->upsert($request->all()));
             return response()->json(['ok' => true, 'override' => $ov]);
         } catch (Throwable $e) {
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 422);
@@ -59,10 +71,12 @@ class FwpController extends Controller
         }
         $items = $request->input('items', []);
         $saved = 0; $errors = [];
-        foreach ((is_array($items) ? $items : []) as $i => $data) {
-            try { $this->upsert($data); $saved++; }
-            catch (Throwable $e) { $errors[$i] = $e->getMessage(); }
-        }
+        $this->inCouncil($request, function () use ($items, &$saved, &$errors) {
+            foreach ((is_array($items) ? $items : []) as $i => $data) {
+                try { $this->upsert($data); $saved++; }
+                catch (Throwable $e) { $errors[$i] = $e->getMessage(); }
+            }
+        });
         return response()->json(['ok' => true, 'saved' => $saved, 'errors' => $errors]);
     }
 
@@ -73,20 +87,22 @@ class FwpController extends Controller
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
-        $q = FwpOverride::query();
-        if ($request->filled('id')) {
-            $q->where('id', (int) $request->input('id'));
-        } else {
-            $q->where('road_id', (int) $request->input('road_id'));
-            if ($request->filled('treat_length_id')) {
-                $q->where('treat_length_id', (int) $request->input('treat_length_id'));
+        $n = $this->inCouncil($request, function () use ($request) {
+            $q = FwpOverride::query();
+            if ($request->filled('id')) {
+                $q->where('id', (int) $request->input('id'));
             } else {
-                $q->whereNull('treat_length_id')
-                  ->where('start_m', (float) $request->input('start_m'))
-                  ->where('end_m', (float) $request->input('end_m'));
+                $q->where('road_id', (int) $request->input('road_id'));
+                if ($request->filled('treat_length_id')) {
+                    $q->where('treat_length_id', (int) $request->input('treat_length_id'));
+                } else {
+                    $q->whereNull('treat_length_id')
+                      ->where('start_m', (float) $request->input('start_m'))
+                      ->where('end_m', (float) $request->input('end_m'));
+                }
             }
-        }
-        $n = $q->delete();
+            return $q->delete();
+        });
         return response()->json(['ok' => true, 'deleted' => $n]);
     }
 
@@ -114,7 +130,7 @@ class FwpController extends Controller
                 fputcsv($out, array_map(fn ($c) => $r[$c] ?? '', $cols));
             }
             fclose($out);
-        }, 'fwp-proposed-changes.csv', ['Content-Type' => 'text/csv']);
+        }, 'fwp-proposed-changes-' . Council::current() . '.csv', ['Content-Type' => 'text/csv']);
     }
 
     // --- helpers -----------------------------------------------------------

@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCouncil;
 use Illuminate\Database\Eloquent\Model;
 
 class RammSurfacing extends Model
 {
+    use BelongsToCouncil;
+
     protected $fillable = [
         'road_id',
         'start_m',

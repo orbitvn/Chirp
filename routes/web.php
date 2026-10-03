@@ -6,6 +6,7 @@ use App\Http\Controllers\PointController;
 use App\Http\Controllers\LineController;
 use App\Http\Controllers\RammController;
 use App\Http\Controllers\FwpController;
+use App\Http\Controllers\CouncilController;
 
 // Redirect root to login
 Route::get('/', fn() => redirect()->route('login'));
@@ -18,6 +19,7 @@ Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 // Protected routes
 Route::get('/dashboard', [AuthController::class, 'dashboard'])->name('dashboard');
 Route::get('/maps', [AuthController::class, 'maps'])->name('maps');
+Route::post('/council', [CouncilController::class, 'switch'])->name('council.switch');
 
 // Map points (JSON API, session-guarded)
 Route::get('/maps/points',  [PointController::class, 'index'])->name('points.index');

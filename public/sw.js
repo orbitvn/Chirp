@@ -8,7 +8,7 @@
  *
  * Bump VERSION whenever the precache list or caching logic changes.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = 'chirp-shell-' + VERSION;
 const DATA  = 'chirp-data-'  + VERSION;
 
@@ -45,9 +45,8 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
-const isBundle = (url) =>
-  url.pathname.endsWith('/data/ramm-offline.json') ||
-  url.pathname.endsWith('/data/ramm-offline.version.json');
+// One bundle per council: /data/ramm-offline-<council>.json (+ .version.json).
+const isBundle = (url) => /\/data\/ramm-offline(-[a-z0-9_-]+)?(\.version)?\.json$/.test(url.pathname);
 
 const isStaticAsset = (url) =>
   /\/(vendor|icons)\//.test(url.pathname) ||

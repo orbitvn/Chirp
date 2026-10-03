@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCouncil;
 use Illuminate\Database\Eloquent\Model;
 
 class RammRoad extends Model
 {
+    use BelongsToCouncil;
+
     protected $primaryKey = 'road_id';
     public $incrementing = false;
     protected $keyType = 'int';
